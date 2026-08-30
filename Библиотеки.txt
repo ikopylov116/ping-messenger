@@ -1,0 +1,9 @@
+pip install customtkinter
+
+Для .exe создания файла
+
+pip install pyinstaller
+
+pyinstaller --onefile --noconsole --icon=ping.ico ping.py
+
+pip install cryptography
