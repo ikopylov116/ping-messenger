@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyc
+dist/
+build/
+*.spec
+
+# IDE
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# User data (local credentials — should not be shared)
+# user_data.json

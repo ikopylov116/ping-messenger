@@ -427,20 +427,20 @@ class PingMessenger:
             return False
 
     def _send_msg(self, event=None):
-        msg = self.msg_input.get("0.0", "end").strip()
+        msg = self.msg_input.get("1.0", "end").strip()
         if not msg or not self.conn or not self.cipher: return
         lower = msg.lower()
         # Команды игр (только крестики-нолики)
         if lower in ("крестики нолики", "крестики-нолики", "tic tac toe", "ttt"):
             self._send_game_invite("ttt")
-            self.msg_input.delete("0.0", "end")
+            self.msg_input.delete("1.0", "end")
             self._on_typing_stop()
             return
         # Обычное сообщение
         payload = json.dumps({"type":"text","sender":self.username,"data":msg}).encode()
         if self._send_data(payload):
             self._log(f"Вы: {msg}", "my_msg")
-            self.msg_input.delete("0.0", "end")
+            self.msg_input.delete("1.0", "end")
             self._on_typing_stop()
 
     # ---------- Отображение в чате и уведомления ----------
@@ -741,24 +741,24 @@ class PingMessenger:
                 elif typ == "image":
                     if sender != self.username:
                         self._log(f"📷 {sender} отправил изображение", "system")
-                        self._display_image(msg["data"], own=False, sender=sender)
+                        self.root.after(0, self._display_image, msg["data"], False, sender)
                 elif typ == "game_invite":
                     if sender != self.username:
-                        self._handle_game_invite(sender)
+                        self.root.after(0, self._handle_game_invite, sender)
                 elif typ == "game_accept":
                     if sender != self.username:
-                        self._handle_game_accept(sender)
+                        self.root.after(0, self._handle_game_accept, sender)
                 elif typ == "game_move":
                     if sender != self.username:
-                        self._handle_game_move(sender, msg.get("data", {}))
+                        self.root.after(0, self._handle_game_move, sender, msg.get("data", {}))
                 elif typ == "typing":
                     if sender != self.username:
-                        self._show_typing(sender, msg.get("data", False))
+                        self.root.after(0, self._show_typing, sender, msg.get("data", False))
                 elif typ == "handshake":
                     if sender != self.username:
                         self._log(f"✅ {sender} присоединился к чату", "system")
                         # Уведомление о подключении
-                        self._notify_if_needed("Новый пользователь", f"{sender} присоединился к чату")
+                        self.root.after(0, self._notify_if_needed, "Новый пользователь", f"{sender} присоединился к чату")
             except socket.error:
                 break
             except Exception as e:

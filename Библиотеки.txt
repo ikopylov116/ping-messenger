@@ -1,9 +1,11 @@
-pip install customtkinter
+# ==========================================
+#  PING! — Secure P2P Messenger
+#  Полный список зависимостей
+# ==========================================
 
-Для .exe создания файла
+# --- Основные зависимости (обязательны) ---
+pip install customtkinter cryptography plyer pillow
 
+# --- Для создания .exe-файла ---
 pip install pyinstaller
-
 pyinstaller --onefile --noconsole --icon=ping.ico ping.py
-
-pip install cryptography

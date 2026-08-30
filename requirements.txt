@@ -1,0 +1,4 @@
+customtkinter>=5.0
+cryptography>=41.0
+plyer>=2.0
+pillow>=10.0
