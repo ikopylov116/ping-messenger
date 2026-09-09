@@ -82,3 +82,7 @@ class MessengerServer:
             except OSError:
                 pass
             self.server_socket = None
+
+    def _log(self, message: str) -> None:
+        if self.on_log:
+            self.on_log(message)
