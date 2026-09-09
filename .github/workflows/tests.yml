@@ -1,0 +1,34 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, 'refactor/**', 'feature/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run tests
+        env:
+          PING_IDENTITY_FILE: ${{ runner.temp }}/ping_identity.pem
+          PING_TRUSTED_PEER_FILE: ${{ runner.temp }}/ping_peer.key
+        run: python run_tests.py -v
