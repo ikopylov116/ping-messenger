@@ -7,6 +7,8 @@ the peer identity is verified/pinned by the application.
 
 from __future__ import annotations
 
+import base64
+
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
@@ -80,7 +82,8 @@ class EncryptionSession:
         key = HKDF(
             algorithm=hashes.SHA256(), length=KEY_LENGTH, salt=None, info=context
         ).derive(shared_secret)
-        self.cipher = Fernet(key)
+        # Fernet expects a 32-byte URL-safe base64-encoded key.
+        self.cipher = Fernet(base64.urlsafe_b64encode(key))
         return self.cipher
 
     @staticmethod
