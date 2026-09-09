@@ -12,6 +12,7 @@ from security.identity import IdentityKey
 
 MAX_HANDSHAKE_SIZE = 16 * 1024
 MAX_PUBLIC_KEY_SIZE = 4096
+HANDSHAKE_TIMEOUT = 15.0
 
 
 class EncryptedConnection:
@@ -49,6 +50,8 @@ class EncryptedConnection:
             raise ValueError("Handshake message is too large")
         try:
             obj = json.loads(data.decode("ascii"))
+            if not isinstance(obj, dict):
+                raise ValueError("Handshake bundle must be an object")
             public_key = base64.b64decode(obj["public_key"], validate=True)
             identity_key = base64.b64decode(obj["identity_key"], validate=True)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
@@ -67,39 +70,45 @@ class EncryptedConnection:
         """Perform a mutually authenticated ephemeral ECDH exchange."""
         del is_server  # The wire protocol is symmetric; both sides send first.
 
-        public_key = self.session.public_key_bytes
-        identity_key = self.session.identity_public_key_bytes
-        if len(public_key) > MAX_PUBLIC_KEY_SIZE:
-            raise ValueError("Public key is unexpectedly large")
-
-        send_frame(self.socket, self._bundle(public_key, identity_key))
-        peer_public_key, peer_identity_key = self._parse_bundle(recv_frame(self.socket))
-        self._check_expected_identity(peer_identity_key)
-
-        signature = self.session.handshake_signature(peer_public_key)
-        if len(signature) != 64:
-            raise ValueError("Invalid local handshake signature")
-        send_frame(
-            self.socket,
-            json.dumps(
-                {"signature": base64.b64encode(signature).decode("ascii")},
-                separators=(",", ":"),
-            ).encode("ascii"),
-        )
-
-        signature_data = recv_frame(self.socket)
-        if len(signature_data) > MAX_HANDSHAKE_SIZE:
-            raise ValueError("Handshake signature message is too large")
+        previous_timeout = self.socket.gettimeout()
+        self.socket.settimeout(HANDSHAKE_TIMEOUT)
         try:
-            peer_signature = base64.b64decode(
-                json.loads(signature_data.decode("ascii"))["signature"], validate=True
-            )
-        except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
-            raise ValueError("Invalid handshake signature") from exc
-        if len(peer_signature) != 64:
-            raise ValueError("Invalid peer handshake signature")
+            public_key = self.session.public_key_bytes
+            identity_key = self.session.identity_public_key_bytes
+            if len(public_key) > MAX_PUBLIC_KEY_SIZE:
+                raise ValueError("Public key is unexpectedly large")
 
-        self.session.establish(peer_public_key, peer_identity_key, peer_signature)
+            send_frame(self.socket, self._bundle(public_key, identity_key))
+            peer_public_key, peer_identity_key = self._parse_bundle(recv_frame(self.socket))
+            self._check_expected_identity(peer_identity_key)
+
+            signature = self.session.handshake_signature(peer_public_key)
+            if len(signature) != 64:
+                raise ValueError("Invalid local handshake signature")
+            send_frame(
+                self.socket,
+                json.dumps(
+                    {"signature": base64.b64encode(signature).decode("ascii")},
+                    separators=(",", ":"),
+                ).encode("ascii"),
+            )
+
+            signature_data = recv_frame(self.socket)
+            if len(signature_data) > MAX_HANDSHAKE_SIZE:
+                raise ValueError("Handshake signature message is too large")
+            try:
+                signature_obj = json.loads(signature_data.decode("ascii"))
+                if not isinstance(signature_obj, dict):
+                    raise ValueError("Handshake signature must be an object")
+                peer_signature = base64.b64decode(signature_obj["signature"], validate=True)
+            except (ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+                raise ValueError("Invalid handshake signature") from exc
+            if len(peer_signature) != 64:
+                raise ValueError("Invalid peer handshake signature")
+
+            self.session.establish(peer_public_key, peer_identity_key, peer_signature)
+        finally:
+            self.socket.settimeout(previous_timeout)
 
     def send_encrypted(self, payload: bytes) -> None:
         """Encrypt and send one payload."""
