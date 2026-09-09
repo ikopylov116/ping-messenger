@@ -101,5 +101,52 @@ ping-messenger/
 ├── games.py             # Игра «Крестики-нолики» (TicTacToe)
 ├── user_data.json       # Локальные учётные данные (авто-создается)
 ├── Библиотеки.txt        # Список pip-зависимостей
+├── requirements-dev.txt  # Зависимости для разработки/тестирования
+├── run_tests.py         # Скрипт запуска модульных тестов
+├── tests/
+│   ├── __init__.py
+│   ├── mock_gui.py      # Заглушки GUI-библиотек для headless-тестирования
+│   ├── test_games.py    # Тесты игровой логики «Крестики-нолики»
+│   └── test_ping.py     # Тесты сети, хеширования и криптографии
 └── README.md            # Этот файл
 ```
+
+---
+
+## Тестирование
+
+Проект покрыт модульными тестами на базе встроенного модуля `unittest` (без дополнительных зависимостей).
+
+### Запуск всех тестов
+
+```bash
+python run_tests.py
+```
+
+### Запуск отдельного набора
+
+```bash
+python run_tests.py games   # только логика игры
+python run_tests.py ping    # только мессенджер (сеть, криптография)
+```
+
+Или напрямую с помощью unittest:
+
+```bash
+python -m unittest discover -s tests -v
+python -m unittest tests.test_games -v
+python -m unittest tests.test_ping -v
+```
+
+> Примечание: тесты не открывают графические окна - GUI-библиотеки
+> (customtkinter, tkinter, PIL, plyer) заменяются заглушками
+> из tests/mock_gui.py, поэтому тесты работают в любой среде (включая CI).
+
+### Что покрыто
+
+| Модуль | Что тестируется |
+|---|---|
+| games.py | _check_win (строки/столбцы/диагонали), _check_draw, ходы игрока и соперника, смена хода, ничья, победа, сдача, блокировка поля |
+| ping.py | find_free_port, get_public_ip, get_all_ips, хеширование пароля (PBKDF2-HMAC-SHA256, 100000 итераций), ECDH-обмен ключами + HKDF + Fernet, _send_data |
+
+Всего **69 тестов** - проверка: `python run_tests.py`, ожидаемый результат OK (Ran 69 tests ... OK).
