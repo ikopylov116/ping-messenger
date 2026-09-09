@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import tempfile
 from pathlib import Path
 
 from cryptography.hazmat.primitives import serialization
@@ -30,18 +32,30 @@ class IdentityKey:
 
         identity = cls.generate()
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(
-            identity._private_key.private_bytes(
-                serialization.Encoding.PEM,
-                serialization.PrivateFormat.PKCS8,
-                serialization.NoEncryption(),
-            )
+        private_bytes = identity._private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
         )
-        try:
-            path.chmod(0o600)
-        except OSError:
-            pass
+        cls._write_private_key_atomic(path, private_bytes)
         return identity
+
+    @staticmethod
+    def _write_private_key_atomic(path: Path, data: bytes) -> None:
+        """Create the identity file without exposing a partially written key."""
+        fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            os.chmod(temp_name, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp_name, path)
+        finally:
+            try:
+                os.unlink(temp_name)
+            except FileNotFoundError:
+                pass
 
     @property
     def public_key_bytes(self) -> bytes:
@@ -60,5 +74,9 @@ class IdentityKey:
 
     @staticmethod
     def verify(public_key_bytes: bytes, signature: bytes, data: bytes) -> None:
+        if len(public_key_bytes) != 32:
+            raise ValueError("Ed25519 public key must be exactly 32 bytes")
+        if len(signature) != 64:
+            raise ValueError("Ed25519 signature must be exactly 64 bytes")
         key = ed25519.Ed25519PublicKey.from_public_bytes(public_key_bytes)
         key.verify(signature, data)
