@@ -1,8 +1,6 @@
 import socket
-import tempfile
 import threading
 import unittest
-from pathlib import Path
 
 from network.connection import EncryptedConnection
 from security.identity import IdentityKey
@@ -21,8 +19,7 @@ class EncryptedConnectionTests(unittest.TestCase):
         )
         return server, client, server_identity, client_identity
 
-    def test_two_peers_establish_and_exchange_payload(self):
-        server, client, server_identity, _ = self._make_pair()
+    def _establish(self, server, client):
         errors = []
 
         def establish_client():
@@ -35,8 +32,12 @@ class EncryptedConnectionTests(unittest.TestCase):
         thread.start()
         server.establish_encryption(is_server=True)
         thread.join(timeout=5)
+        return errors
 
+    def test_two_peers_establish_and_exchange_payload(self):
+        server, client, server_identity, _ = self._make_pair()
         try:
+            errors = self._establish(server, client)
             self.assertFalse(errors)
             self.assertEqual(server.session.peer_identity_public_key, client.session.identity_public_key_bytes)
             self.assertEqual(client.session.peer_identity_public_key, server_identity.public_key_bytes)
@@ -53,41 +54,21 @@ class EncryptedConnectionTests(unittest.TestCase):
             client.close()
 
     def test_expected_peer_identity_is_enforced(self):
-        server, client, _, _ = self._make_pair(expected_server_key=IdentityKey.generate().public_key_bytes)
-        errors = []
-
-        def establish_client():
-            try:
-                client.establish_encryption(is_server=False)
-            except Exception as exc:
-                errors.append(exc)
-
-        thread = threading.Thread(target=establish_client)
-        thread.start()
-        with self.assertRaises(ValueError):
-            server.establish_encryption(is_server=True)
-        thread.join(timeout=5)
-        self.assertTrue(errors)
-        server.close()
-        client.close()
+        wrong_key = IdentityKey.generate().public_key_bytes
+        server, client, _, _ = self._make_pair(expected_server_key=wrong_key)
+        try:
+            errors = self._establish(server, client)
+            self.assertTrue(errors)
+            self.assertTrue(any("trusted key" in str(error) for error in errors))
+        finally:
+            server.close()
+            client.close()
 
     def test_expected_peer_identity_accepts_trusted_key(self):
-        server, client, server_identity, _ = self._make_pair(expected_server_key=server_identity_placeholder := b"")
-        # Replace the placeholder with the real key before the handshake.
+        server, client, server_identity, _ = self._make_pair()
         client.expected_peer_identity = server_identity.public_key_bytes
-        errors = []
-
-        def establish_client():
-            try:
-                client.establish_encryption(is_server=False)
-            except Exception as exc:
-                errors.append(exc)
-
-        thread = threading.Thread(target=establish_client)
-        thread.start()
-        server.establish_encryption(is_server=True)
-        thread.join(timeout=5)
         try:
+            errors = self._establish(server, client)
             self.assertFalse(errors)
         finally:
             server.close()
