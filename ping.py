@@ -2,37 +2,38 @@ import socket, threading, json, os, tkinter as tk, customtkinter as ctk
 from tkinter import messagebox, filedialog, font as tkfont
 import base64, hashlib, secrets, struct, io, urllib.request
 from datetime import datetime
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import serialization, hashes
-from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from cryptography.fernet import Fernet
 from PIL import Image, ImageTk, ImageGrab
 
-# Импорт игры (только крестики-нолики)
 from games import TicTacToeWindow
-
-# Для уведомлений
 from plyer import notification
+from network.connection import EncryptedConnection
+from network.protocol import send_frame, recv_frame
+from security.identity import IdentityKey
+from security.trust import TrustStore
 
-# ---------- Константы ----------
-CONFIG = {"host":"0.0.0.0","data_file":"user_data.json","theme":"blue","appearance":"dark"}
+CONFIG = {"host":"0.0.0.0","data_file":"user_data.json","identity_file":"identity_key.pem","trust_file":"trusted_peers.json","theme":"blue","appearance":"dark"}
 START_PORT, PORT_RANGE, MAX_IMG_W = 55555, 20, 300
 
-# ---------- Вспомогательные функции ----------
+
 def find_free_port(start=START_PORT, max_attempts=PORT_RANGE):
     for port in range(start, start+max_attempts):
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.bind(('0.0.0.0', port))
                 return port
-        except OSError: continue
+        except OSError:
+            continue
     raise RuntimeError("Нет свободного порта")
+
 
 def get_public_ip():
     try:
         with urllib.request.urlopen('https://api.ipify.org', timeout=5) as r:
             return r.read().decode()
-    except: return None
+    except Exception:
+        return None
+
 
 def get_all_ips():
     ips = []
@@ -41,107 +42,70 @@ def get_all_ips():
             ip = addr[4][0]
             if ip not in ips and ip != '127.0.0.1' and not ip.startswith('127.'):
                 ips.append(ip)
-    except: pass
+    except Exception:
+        pass
     if not ips:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(('8.8.8.8',80))
-            ip = s.getsockname()[0]; s.close()
-            if ip != '127.0.0.1': ips.append(ip)
-        except: pass
-    if not ips: ips.append('127.0.0.1')
+            s.connect(('8.8.8.8', 80))
+            ip = s.getsockname()[0]
+            s.close()
+            if ip != '127.0.0.1':
+                ips.append(ip)
+        except Exception:
+            pass
+    if not ips:
+        ips.append('127.0.0.1')
     return ips
 
-# ---------- Палитра эмодзи ----------
+
 class EmojiPicker(ctk.CTkToplevel):
     def __init__(self, parent, callback):
         super().__init__(parent)
         self.callback = callback
         self.title("Палитра эмодзи")
         self.geometry("700x550")
-        self.minsize(600,400)
-        self.transient(parent); self.grab_set()
+        self.minsize(600, 400)
+        self.transient(parent)
+        self.grab_set()
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def _build_ui(self):
-        main = ctk.CTkFrame(self); main.pack(fill="both", expand=True, padx=10, pady=10)
+        main = ctk.CTkFrame(self)
+        main.pack(fill="both", expand=True, padx=10, pady=10)
         tabs = ctk.CTkTabview(main, width=660, height=450)
         tabs.pack(fill="both", expand=True)
         categories = {
-            "Смайлы": [
-                "😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊",
-                "😋","😎","😍","🥰","😘","😗","😙","😚","☺️","🙂",
-                "🤗","🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣",
-                "😥","😮","🤐","😯","😪","😫","😴","😌","😛","😜",
-                "😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️",
-                "🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨",
-                "😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵",
-                "😡","😠","🤬","😷","🤒","🤕","🤢","🤮","🥴","😇",
-                "🤠","🤡","🥳","🥺","🤥","🤫","🤭","🧐","🤓","😈"
-            ],
-            "Жесты": [
-                "👋","🤚","🖐️","✋","🖖","👌","🤌","🤞","🤟","🤘",
-                "🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊",
-                "👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️",
-                "💅","🤳","💪","🦾","🦵","🦶","👂","🦻","👃","🧠",
-                "🦷","🦴","👀","👁️","👅","👄","💋","🩸"
-            ],
-            "Еда": [
-                "🍏","🍎","🍐","🍊","🍋","🍌","🍉","🍇","🍓","🫐",
-                "🍈","🍒","🍑","🥭","🍍","🥥","🥝","🍅","🍆","🥑",
-                "🫑","🌽","🥕","🥒","🥬","🥦","🧄","🧅","🍄","🥜",
-                "🌰","🍞","🥐","🥖","🫓","🥨","🥯","🥞","🧇","🧀",
-                "🍖","🍗","🥩","🥓","🍔","🍟","🍕","🌭","🥪","🌮",
-                "🌯","🫔","🥙","🧆","🥚","🍳","🥘","🍲","🫕","🥣",
-                "🥗","🍿","🧈","🧂","🥫","🍱","🍘","🍙","🍚","🍛",
-                "🍜","🍝","🍠","🍢","🍣","🍤","🍥","🥮","🍡","🥠",
-                "🥟","🥤","🧋","🧃","🧉","🧊","🍦","🍧","🍨","🍩",
-                "🍪","🎂","🍰","🧁","🥧","🍫","🍬","🍭","🍮","🍯",
-                "☕","🍵","🥤","🧃","🧉","🧊","🍶","🍾","🍷","🍸",
-                "🍹","🍺","🍻","🥂","🥃","🥤"
-            ],
-            "Транспорт": [
-                "🚗","🚕","🚙","🚌","🚎","🏎️","🚓","🚑","🚒","🚐",
-                "🛻","🚚","🚛","🚜","🏍️","🛵","🚲","🦽","🦼","🛹",
-                "🛼","🚘","🚖","🚔","🚍","🚀","🛸","✈️","🛩️","🛫",
-                "🛬","🪂","💺","🚁","🚂","🚃","🚄","🚅","🚆","🚇",
-                "🚈","🚉","🚊","🚝","🚞","🚋","🚌","🚍","🚎","🚐",
-                "🚑","🚒","🚓","🚔","🚕","🚖","🚗","🚘","🚙","🚚",
-                "🚛","🚜","🚝","🚞","🚟","🚠","🚡","🚢","🛳️","⛵",
-                "🛶","🚤","🛥️","🛰️","🛩️","🛫","🛬","🪂"
-            ],
-            "Символы": [
-                "❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔",
-                "❣️","💕","💞","💓","💗","💖","💘","💝","💟","☮️",
-                "✝️","☪️","🕉️","☸️","✡️","🔯","🕎","☯️","☦️","🛐",
-                "⛎","♈","♉","♊","♋","♌","♍","♎","♏","♐",
-                "♑","♒","♓","🆔","⚛️","🉑","☢️","☣️","📛","🔰",
-                "⭕","✅","☑️","✔️","❌","❎","➖","➕","➗","✖️",
-                "🟢","🟣","🟤","⚪","⚫","🔴","🟠","🟡","🟢","🔵",
-                "🟣","🟤"
-            ]
+            "Смайлы": ["😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","🥰","😘","😗","😙","😚","☺️","🙂","🤗","🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥","😮","🤐","😯","😪","😫","😴","😌","😛","😜","😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨","😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","😡","😠","🤬","😷","🤒","🤕","🤢","🤮","🥴","😇","🤠","🤡","🥳","🥺","🤥","🤫","🤭","🧐","🤓","😈"],
+            "Жесты": ["👋","🤚","🖐️","✋","🖖","👌","🤌","🤞","🤟","🤘","🤙","👈","👉","👆","🖕","👇","☝️","👍","👎","✊","👊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✍️","💅","🤳","💪","🦾","🦵","🦶","👂","🦻","👃","🧠","🦷","🦴","👀","👁️","👅","👄","💋","🩸"],
+            "Еда": ["🍏","🍎","🍐","🍊","🍋","🍌","🍉","🍇","🍓","🫐","🍈","🍒","🍑","🥭","🍍","🥥","🥝","🍅","🍆","🥑","🫑","🌽","🥕","🥒","🥬","🥦","🧄","🧅","🍄","🥜","🌰","🍞","🥐","🥖","🫓","🥨","🥯","🥞","🧇","🧀","🍖","🍗","🥩","🥓","🍔","🍟","🍕","🌭","🥪","🌮","🌯","🫔","🥙","🧆","🥚","🍳","🥘","🍲","🫕","🥣","🥗","🍿","🧈","🧂","🥫","🍱","🍘","🍙","🍚","🍛","🍜","🍝","🍠","🍢","🍣","🍤","🍥","🥮","🍡","🥠","🥟","🥤","🧋","🧃","🧉","🧊","🍦","🍧","🍨","🍩","🍪","🎂","🍰","🧁","🥧","🍫","🍬","🍭","🍮","🍯","☕","🍵","🍶","🍾","🍷","🍸","🍹","🍺","🍻","🥂","🥃"],
+            "Транспорт": ["🚗","🚕","🚙","🚌","🚎","🏎️","🚓","🚑","🚒","🚐","🛻","🚚","🚛","🚜","🏍️","🛵","🚲","🦽","🦼","🛹","🛼","🚘","🚖","🚔","🚍","🚀","🛸","✈️","🛩️","🛫","🛬","🪂","💺","🚁","🚂","🚃","🚄","🚅","🚆","🚇","🚈","🚉","🚊","🚝","🚞","🚋","🚟","🚠","🚡","🚢","🛳️","⛵","🛶","🚤","🛥️","🛰️"],
+            "Символы": ["❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💔","❣️","💕","💞","💓","💗","💖","💘","💝","💟","☮️","✝️","☪️","🕉️","☸️","✡️","🔯","🕎","☯️","☦️","🛐","⛎","♈","♉","♊","♋","♌","♍","♎","♏","♐","♑","♒","♓","🆔","⚛️","🉑","☢️","☣️","📛","🔰","⭕","✅","☑️","✔️","❌","❎","➖","➕","➗","✖️","🟢","🟣","🟤","⚪","⚫","🔴","🟠","🟡","🔵"]
         }
         for cat, emojis in categories.items():
             tabs.add(cat)
             frame = ctk.CTkScrollableFrame(tabs.tab(cat), width=640, height=400)
             frame.pack(fill="both", expand=True, padx=5, pady=5)
-            r=c=0
+            r = c = 0
             for em in emojis:
-                btn = ctk.CTkButton(frame, text=em, width=45, height=45,
-                                    font=("Segoe UI Emoji",18),
-                                    command=lambda e=em: self._insert(e))
+                btn = ctk.CTkButton(frame, text=em, width=45, height=45, font=("Segoe UI Emoji", 18), command=lambda e=em: self._insert(e))
                 btn.grid(row=r, column=c, padx=2, pady=2, sticky="nsew")
                 c += 1
-                if c >= 10: c=0; r+=1
-            for i in range(10): frame.grid_columnconfigure(i, weight=1)
-            for i in range(r+1): frame.grid_rowconfigure(i, weight=1)
+                if c >= 10:
+                    c = 0
+                    r += 1
+            for i in range(10):
+                frame.grid_columnconfigure(i, weight=1)
+            for i in range(r + 1):
+                frame.grid_rowconfigure(i, weight=1)
         ctk.CTkButton(main, text="Закрыть", command=self.destroy, width=100).pack(pady=10)
 
     def _insert(self, emoji):
         self.callback(emoji)
+        self.destroy()
 
-# ---------- Просмотр изображений ----------
+
 class ImageViewer(ctk.CTkToplevel):
     def __init__(self, parent, pil_img):
         super().__init__(parent)
@@ -149,20 +113,22 @@ class ImageViewer(ctk.CTkToplevel):
         self.scale = 1.0
         self.full = False
         self.photo = None
-        self.transient(parent); self.grab_set()
+        self.transient(parent)
+        self.grab_set()
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        max_w, max_h = int(sw*0.8), int(sh*0.8)
+        max_w, max_h = int(sw * 0.8), int(sh * 0.8)
         w, h = self.original.size
-        self.scale = min(max_w/w, max_h/h, 1.0)
-        win_w, win_h = max(400, int(w*self.scale)), max(300, int(h*self.scale))
-        self.geometry(f"{min(win_w,max_w)}x{min(win_h,max_h)}")
+        self.scale = min(max_w / w, max_h / h, 1.0)
+        win_w, win_h = max(400, int(w * self.scale)), max(300, int(h * self.scale))
+        self.geometry(f"{min(win_w, max_w)}x{min(win_h, max_h)}")
         self._build_ui()
         self._redraw()
         self._bind_events()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
     def _build_ui(self):
-        main = ctk.CTkFrame(self); main.pack(fill="both", expand=True, padx=5, pady=5)
+        main = ctk.CTkFrame(self)
+        main.pack(fill="both", expand=True, padx=5, pady=5)
         self.canvas = tk.Canvas(main, bg="#2b2b2b", highlightthickness=0)
         self.canvas.pack(fill="both", expand=True)
         btn_frame = ctk.CTkFrame(main, fg_color="transparent")
@@ -172,13 +138,14 @@ class ImageViewer(ctk.CTkToplevel):
         self.fs_btn = ctk.CTkButton(btn_frame, text="⛶ На весь экран", width=120, command=self.toggle_fullscreen)
         self.fs_btn.pack(side="left", padx=5)
         ctk.CTkButton(btn_frame, text="💾 Сохранить", width=80, command=self.save).pack(side="left", padx=5)
-        self.scale_label = ctk.CTkLabel(main, text="Масштаб: 100%", font=("Inter",10))
-        self.scale_label.pack(pady=(0,5))
-        ctk.CTkLabel(main, text="Колесо – масштаб, ЛКМ – перемещение, F/А – полноэкранный", font=("Inter",10), text_color="gray").pack()
+        self.scale_label = ctk.CTkLabel(main, text="Масштаб: 100%", font=("Inter", 10))
+        self.scale_label.pack(pady=(0, 5))
+        ctk.CTkLabel(main, text="Колесо – масштаб, ЛКМ – перемещение, F/А – полноэкранный", font=("Inter", 10), text_color="gray").pack()
 
     def _bind_events(self):
         self.canvas.bind("<MouseWheel>", self._on_wheel)
-        self.canvas.bind("<Button-4>", self._on_wheel); self.canvas.bind("<Button-5>", self._on_wheel)
+        self.canvas.bind("<Button-4>", self._on_wheel)
+        self.canvas.bind("<Button-5>", self._on_wheel)
         self.bind("<Escape>", lambda e: self.toggle_fullscreen(force_off=True))
         self.bind("f", lambda e: self.toggle_fullscreen())
         self.bind("F", lambda e: self.toggle_fullscreen())
@@ -188,37 +155,35 @@ class ImageViewer(ctk.CTkToplevel):
         self.canvas.bind("<B1-Motion>", lambda e: self.canvas.scan_dragto(e.x, e.y, gain=1))
 
     def _on_wheel(self, e):
-        delta = 0.1 if (e.num == 4 or (hasattr(e,'delta') and e.delta>0)) else -0.1
+        delta = 0.1 if (e.num == 4 or (hasattr(e, 'delta') and e.delta > 0)) else -0.1
         self.zoom(delta)
 
     def zoom(self, delta):
-        new = self.scale + delta
-        if new < 0.1: new = 0.1
-        elif new > 5.0: new = 5.0
-        if new == self.scale: return
+        new = max(0.1, min(5.0, self.scale + delta))
+        if new == self.scale:
+            return
         self.scale = new
         self._redraw()
-        self.scale_label.configure(text=f"Масштаб: {int(self.scale*100)}%")
+        self.scale_label.configure(text=f"Масштаб: {int(self.scale * 100)}%")
 
     def _redraw(self):
         self.canvas.delete("all")
         w, h = self.original.size
-        nw, nh = max(1, int(w*self.scale)), max(1, int(h*self.scale))
+        nw, nh = max(1, int(w * self.scale)), max(1, int(h * self.scale))
         img = self.original.resize((nw, nh), Image.Resampling.LANCZOS)
         self.photo = ImageTk.PhotoImage(img)
-        self.canvas.create_image(0,0, anchor="nw", image=self.photo)
-        self.canvas.config(scrollregion=(0,0,nw,nh))
+        self.canvas.create_image(0, 0, anchor="nw", image=self.photo)
+        self.canvas.config(scrollregion=(0, 0, nw, nh))
 
     def toggle_fullscreen(self, force_off=False):
-        if force_off and not self.full: return
+        if force_off and not self.full:
+            return
         self.full = not self.full if not force_off else False
         self.attributes('-fullscreen', self.full)
         self.fs_btn.configure(text="⛶ Выйти из полноэкранного" if self.full else "⛶ На весь экран")
-        self.update_idletasks()
 
     def save(self):
-        path = filedialog.asksaveasfilename(defaultextension=".png",
-            filetypes=[("PNG Image","*.png"),("JPEG","*.jpg"),("All","*.*")])
+        path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG Image", "*.png"), ("JPEG", "*.jpg"), ("All", "*.*")])
         if path:
             try:
                 self.original.save(path)
@@ -226,7 +191,7 @@ class ImageViewer(ctk.CTkToplevel):
             except Exception as e:
                 messagebox.showerror("Ошибка", str(e))
 
-# ---------- Основной класс мессенджера ----------
+
 class PingMessenger:
     def __init__(self):
         self.root = ctk.CTk()
@@ -236,24 +201,29 @@ class PingMessenger:
         ctk.set_default_color_theme(CONFIG["theme"])
 
         self.username = self.password = self.salt = ""
-        self.conn = self.cipher = None
+        self.conn = None
+        self.cipher = None
+        self.secure_connection = None
+        self.peer_identity_key = None
+        self.peer_fingerprint = None
         self.running = True
         self.server_sock = None
         self.image_refs = []
         self.typing_timer = None
         self.is_typing = False
 
-        # Игра (только крестики-нолики)
+        self.identity = IdentityKey.load_or_create(CONFIG["identity_file"])
+        self.trust_store = TrustStore(CONFIG["trust_file"])
+
         self.game_window = None
         self.game_opponent = None
-        self.game_type = None   # всегда 'ttt'
+        self.game_type = None
 
         self._setup_styles()
         self._load_user()
         self._show_welcome()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-    # ---------- Стили и данные ----------
     def _setup_styles(self):
         self.main_font = ctk.CTkFont(family="Inter", size=16)
         self.header_font = ctk.CTkFont(family="Inter", size=28, weight="bold")
@@ -266,43 +236,49 @@ class PingMessenger:
             try:
                 with open(CONFIG["data_file"], "r", encoding="utf-8") as f:
                     d = json.load(f)
-                    self.username = d.get("username","")
-                    self.password = d.get("password","")
-                    self.salt = d.get("salt","")
-            except: pass
+                    self.username = d.get("username", "")
+                    self.password = d.get("password", "")
+                    self.salt = d.get("salt", "")
+            except Exception:
+                pass
 
     def _save_user(self):
         try:
-            if not self.salt: self.salt = secrets.token_hex(16)
+            if not self.salt:
+                self.salt = secrets.token_hex(16)
             pwd_hash = hashlib.pbkdf2_hmac('sha256', self.password.encode(), self.salt.encode(), 100000).hex()
             with open(CONFIG["data_file"], "w", encoding="utf-8") as f:
-                json.dump({"username":self.username,"password":pwd_hash,"salt":self.salt}, f)
-        except: pass
+                json.dump({"username": self.username, "password": pwd_hash, "salt": self.salt}, f)
+        except Exception:
+            pass
 
     def _clear(self):
-        for w in self.root.winfo_children(): w.destroy()
+        for w in self.root.winfo_children():
+            w.destroy()
 
     def _show_welcome(self):
         self._clear()
-        ctk.CTkLabel(self.root, text="PING!", font=self.header_font, text_color="#00ff88").pack(pady=(50,10))
-        ctk.CTkLabel(self.root, text="Мессенджер для своих", font=("Inter",14)).pack(pady=(0,30))
-        btn = {"width":300,"height":50,"font":self.main_font}
+        ctk.CTkLabel(self.root, text="PING!", font=self.header_font, text_color="#00ff88").pack(pady=(50, 10))
+        ctk.CTkLabel(self.root, text="Мессенджер для своих", font=("Inter", 14)).pack(pady=(0, 30))
+        btn = {"width": 300, "height": 50, "font": self.main_font}
         ctk.CTkButton(self.root, text="РЕГИСТРАЦИЯ", command=lambda: self._show_auth(True), **btn).pack(pady=10)
         ctk.CTkButton(self.root, text="ВОЙТИ", command=lambda: self._show_auth(False), **btn).pack(pady=10)
         canvas = tk.Canvas(self.root, width=300, height=100, bg="#2b2b2b", highlightthickness=0)
         canvas.pack(pady=30)
-        colors = ["#ff4444","#ffaa00","#ffff00","#00ff44"]
-        for i,c in enumerate(colors):
-            h=(i+1)*20
-            canvas.create_rectangle(20+i*60, 100-h, 60+i*60, 100, fill=c, outline="")
+        colors = ["#ff4444", "#ffaa00", "#ffff00", "#00ff44"]
+        for i, c in enumerate(colors):
+            h = (i + 1) * 20
+            canvas.create_rectangle(20 + i * 60, 100 - h, 60 + i * 60, 100, fill=c, outline="")
 
     def _show_auth(self, reg):
         self._clear()
         ctk.CTkLabel(self.root, text="Регистрация" if reg else "Вход", font=self.header_font).pack(pady=30)
         self.u_entry = ctk.CTkEntry(self.root, placeholder_text="Имя", width=300, height=45)
-        self.u_entry.insert(0, self.username); self.u_entry.pack(pady=10)
+        self.u_entry.insert(0, self.username)
+        self.u_entry.pack(pady=10)
         self.p_entry = ctk.CTkEntry(self.root, placeholder_text="Пароль", show="•", width=300, height=45)
-        if len(self.password) < 50: self.p_entry.insert(0, self.password)
+        if len(self.password) < 50:
+            self.p_entry.insert(0, self.password)
         self.p_entry.pack(pady=10)
         ctk.CTkButton(self.root, text="ПРОДОЛЖИТЬ", command=self._handle_auth).pack(pady=20)
         ctk.CTkButton(self.root, text="Назад", fg_color="transparent", command=self._show_welcome).pack()
@@ -318,49 +294,43 @@ class PingMessenger:
 
     def _show_main(self):
         self._clear()
-        nav = ctk.CTkFrame(self.root, height=60); nav.pack(fill="x", padx=10, pady=10)
-        ctk.CTkLabel(nav, text=f"Аккаунт: @{self.username}", font=("Inter",14,"bold")).pack(side="left", padx=15)
+        nav = ctk.CTkFrame(self.root, height=60)
+        nav.pack(fill="x", padx=10, pady=10)
+        ctk.CTkLabel(nav, text=f"Аккаунт: @{self.username}", font=("Inter", 14, "bold")).pack(side="left", padx=15)
         ctk.CTkButton(nav, text="Создать чат", width=140, command=self._start_server).pack(side="right", padx=5)
         ctk.CTkButton(nav, text="Подключиться", width=140, command=self._start_client).pack(side="right", padx=5)
+        ctk.CTkButton(nav, text="🔐 Мой отпечаток", width=140, command=self._show_my_fingerprint).pack(side="right", padx=5)
 
         container = ctk.CTkFrame(self.root, fg_color="transparent")
         container.pack(fill="both", expand=True, padx=10, pady=5)
-
-        self.chat = tk.Text(container, font=self.chat_font, bg="#1e1e1e", fg="#ffffff",
-                            wrap=tk.WORD, padx=10, pady=10, spacing1=0, spacing2=0, spacing3=0,
-                            relief=tk.FLAT, borderwidth=0, highlightthickness=0)
+        self.chat = tk.Text(container, font=self.chat_font, bg="#1e1e1e", fg="#ffffff", wrap=tk.WORD, padx=10, pady=10, spacing1=0, spacing2=0, spacing3=0, relief=tk.FLAT, borderwidth=0, highlightthickness=0)
         self.chat.pack(fill="both", expand=True)
         self.chat.tag_config("system", foreground="#888888", font=(self.chat_font[0], 11, "italic"))
         self.chat.tag_config("my_msg", foreground="#00ff88", font=(self.chat_font[0], 13, "bold"))
         self.chat.tag_config("other_msg", foreground="#ffffff", font=(self.chat_font[0], 13))
         self.chat.tag_config("msg_indent", lmargin1=self.timestamp_width, lmargin2=self.timestamp_width)
         self.chat.config(state="disabled")
-
-        self.typing_label = ctk.CTkLabel(container, text="", font=("Inter",11,"italic"), text_color="#ffaa00")
-        self.typing_label.pack(side="top", fill="x", pady=(2,0))
-
+        self.typing_label = ctk.CTkLabel(container, text="", font=("Inter", 11, "italic"), text_color="#ffaa00")
+        self.typing_label.pack(side="top", fill="x", pady=(2, 0))
         input_frame = ctk.CTkFrame(container, fg_color="transparent", height=90)
-        input_frame.pack(side="bottom", fill="x", pady=(5,0))
+        input_frame.pack(side="bottom", fill="x", pady=(5, 0))
         input_frame.pack_propagate(False)
-
-        self.msg_input = ctk.CTkTextbox(input_frame, height=70, wrap="word", font=("Inter",14))
-        self.msg_input.pack(side="left", fill="both", expand=True, padx=(0,10))
-
+        self.msg_input = ctk.CTkTextbox(input_frame, height=70, wrap="word", font=("Inter", 14))
+        self.msg_input.pack(side="left", fill="both", expand=True, padx=(0, 10))
         btn_frame = ctk.CTkFrame(input_frame, fg_color="transparent")
         btn_frame.pack(side="right", fill="y")
-        ctk.CTkButton(btn_frame, text="😊", width=50, height=40,
-                      font=("Segoe UI Emoji",18), command=self._open_emoji).pack(side="left", padx=(0,5))
-        ctk.CTkButton(btn_frame, text="📎", width=50, height=40,
-                      font=("Segoe UI Emoji",16), command=self._send_image).pack(side="left", padx=(0,5))
-        ctk.CTkButton(btn_frame, text="ОТПРАВИТЬ", width=90, height=40,
-                      command=self._send_msg).pack(side="left")
-
+        ctk.CTkButton(btn_frame, text="😊", width=50, height=40, font=("Segoe UI Emoji", 18), command=self._open_emoji).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(btn_frame, text="📎", width=50, height=40, font=("Segoe UI Emoji", 16), command=self._send_image).pack(side="left", padx=(0, 5))
+        ctk.CTkButton(btn_frame, text="ОТПРАВИТЬ", width=90, height=40, command=self._send_msg).pack(side="left")
         self.msg_input.bind("<Return>", self._send_msg)
         self.msg_input.bind("<Shift-Return>", lambda e: self.msg_input.insert("insert", "\n"))
         self.msg_input.bind("<Control-Return>", lambda e: self.msg_input.insert("insert", "\n"))
         self.msg_input.bind("<Key>", self._on_typing)
         self.msg_input.bind("<FocusOut>", self._on_typing_stop)
         self.msg_input.bind("<<Paste>>", self._paste)
+
+    def _show_my_fingerprint(self):
+        messagebox.showinfo("Мой отпечаток", "Покажите этот отпечаток собеседнику для проверки личности:\n\n" + self.identity.fingerprint)
 
     def _open_emoji(self):
         EmojiPicker(self.root, self._insert_emoji)
@@ -369,7 +339,6 @@ class PingMessenger:
         self.msg_input.insert("insert", em)
         self.msg_input.focus()
 
-    # ---------- Вставка из буфера ----------
     def _paste(self, event=None):
         try:
             img = ImageGrab.grabclipboard()
@@ -381,19 +350,21 @@ class PingMessenger:
                     self._log("Вы вставили изображение из буфера", "my_msg")
                     self._display_image(b64, own=True)
                 return "break"
-        except: pass
+        except Exception:
+            pass
         try:
             text = self.root.clipboard_get()
             if text:
                 self.msg_input.insert("insert", text)
                 return "break"
-        except: pass
+        except Exception:
+            pass
 
-    # ---------- Отправка изображений ----------
     def _send_image_data(self, b64, own=False):
-        if not self.conn or not self.cipher: return False
+        if not self.conn or not self.cipher:
+            return False
         try:
-            payload = json.dumps({"type":"image","sender":self.username,"data":b64}).encode()
+            payload = json.dumps({"type": "image", "sender": self.username, "data": b64}).encode()
             return self._send_data(payload)
         except Exception as e:
             self._log(f"Ошибка отправки изображения: {e}", "system")
@@ -403,9 +374,9 @@ class PingMessenger:
         if not self.conn or not self.cipher:
             messagebox.showwarning("Внимание", "Нет активного соединения.")
             return
-        path = filedialog.askopenfilename(title="Выберите изображение",
-                                          filetypes=[("Изображения","*.png *.jpg *.jpeg *.gif *.bmp")])
-        if not path: return
+        path = filedialog.askopenfilename(title="Выберите изображение", filetypes=[("Изображения", "*.png *.jpg *.jpeg *.gif *.bmp")])
+        if not path:
+            return
         try:
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode()
@@ -415,12 +386,11 @@ class PingMessenger:
         except Exception as e:
             messagebox.showerror("Ошибка", str(e))
 
-    # ---------- Отправка данных ----------
     def _send_data(self, data):
-        if not self.conn or not self.cipher: return False
+        if not self.secure_connection:
+            return False
         try:
-            enc = self.cipher.encrypt(data)
-            self.conn.sendall(struct.pack('>I', len(enc)) + enc)
+            self.secure_connection.send_encrypted(data)
             return True
         except Exception as e:
             self._log(f"Ошибка отправки: {e}", "system")
@@ -428,26 +398,22 @@ class PingMessenger:
 
     def _send_msg(self, event=None):
         msg = self.msg_input.get("1.0", "end").strip()
-        if not msg or not self.conn or not self.cipher: return
+        if not msg or not self.conn or not self.cipher:
+            return
         lower = msg.lower()
-        # Команды игр (только крестики-нолики)
         if lower in ("крестики нолики", "крестики-нолики", "tic tac toe", "ttt"):
             self._send_game_invite("ttt")
             self.msg_input.delete("1.0", "end")
             self._on_typing_stop()
             return
-        # Обычное сообщение
-        payload = json.dumps({"type":"text","sender":self.username,"data":msg}).encode()
+        payload = json.dumps({"type": "text", "sender": self.username, "data": msg}).encode()
         if self._send_data(payload):
             self._log(f"Вы: {msg}", "my_msg")
             self.msg_input.delete("1.0", "end")
             self._on_typing_stop()
 
-    # ---------- Отображение в чате и уведомления ----------
     def _log(self, text, tag=None, widget=None, ts=None, sender=None):
-        """Передаёт сообщение в UI и при необходимости показывает уведомление."""
         self.root.after(0, self._log_ui, text, tag, widget, ts)
-        # Если сообщение от другого пользователя (sender != self.username) и окно не активно – уведомление
         if sender and sender != self.username:
             self._notify_if_needed("Новое сообщение", text)
 
@@ -460,8 +426,7 @@ class PingMessenger:
             self.chat.insert("end", "\n")
         else:
             tag = tag or "other_msg"
-            lines = text.split('\n')
-            for i,line in enumerate(lines):
+            for i, line in enumerate(text.split('\n')):
                 if i == 0:
                     self.chat.insert("end", f"[{ts}] {line}\n", tag)
                 else:
@@ -470,17 +435,10 @@ class PingMessenger:
         self.chat.config(state="disabled")
 
     def _notify_if_needed(self, title, message):
-        """Показывает системное уведомление, если окно свёрнуто или не в фокусе."""
         try:
-            # Проверяем, активно ли окно
             if self.root.state() == 'iconic' or not self.root.focus_displayof():
-                notification.notify(
-                    title=title,
-                    message=message[:100],  # обрезаем длинные сообщения
-                    app_name="PING!",
-                    timeout=5
-                )
-        except:
+                notification.notify(title=title, message=message[:100], app_name="PING!", timeout=5)
+        except Exception:
             pass
 
     def _display_image(self, b64, own=False, sender=None):
@@ -488,10 +446,10 @@ class PingMessenger:
             img_data = base64.b64decode(b64)
             pil = Image.open(io.BytesIO(img_data))
             orig = pil.copy()
-            w,h = pil.size
+            w, h = pil.size
             if w > MAX_IMG_W:
                 r = MAX_IMG_W / w
-                pil = pil.resize((MAX_IMG_W, int(h*r)), Image.Resampling.LANCZOS)
+                pil = pil.resize((MAX_IMG_W, int(h * r)), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(pil)
             lbl = tk.Label(self.chat, image=photo, bg="#1e1e1e", cursor="hand2")
             lbl.image = photo
@@ -503,9 +461,9 @@ class PingMessenger:
         except Exception as e:
             self._log(f"Ошибка отображения изображения: {e}", "system")
 
-    # ---------- Статус печати ----------
     def _on_typing(self, e):
-        if e.keysym in ('Shift_L','Shift_R','Control_L','Control_R','Alt_L','Alt_R'): return
+        if e.keysym in ('Shift_L', 'Shift_R', 'Control_L', 'Control_R', 'Alt_L', 'Alt_R'):
+            return
         if not self.is_typing and self.conn and self.cipher:
             self.is_typing = True
             self._send_typing(True)
@@ -516,16 +474,18 @@ class PingMessenger:
     def _on_typing_stop(self, e=None):
         if self.is_typing:
             self.is_typing = False
-            if self.conn and self.cipher: self._send_typing(False)
+            if self.conn and self.cipher:
+                self._send_typing(False)
         if self.typing_timer:
-            self.root.after_cancel(self.typing_timer); self.typing_timer = None
+            self.root.after_cancel(self.typing_timer)
+            self.typing_timer = None
 
     def _send_typing(self, state):
         try:
-            payload = json.dumps({"type":"typing","sender":self.username,"data":state}).encode()
-            enc = self.cipher.encrypt(payload)
-            self.conn.sendall(struct.pack('>I', len(enc)) + enc)
-        except: pass
+            payload = json.dumps({"type": "typing", "sender": self.username, "data": state}).encode()
+            self._send_data(payload)
+        except Exception:
+            pass
 
     def _show_typing(self, sender, state):
         if state:
@@ -538,22 +498,20 @@ class PingMessenger:
             if hasattr(self, '_typing_hide'):
                 self.root.after_cancel(self._typing_hide)
 
-    # ---------- Игра (только крестики-нолики) ----------
     def _send_game_invite(self, game_type):
         if not self.conn or not self.cipher:
             messagebox.showwarning("Нет соединения", "Подключитесь к собеседнику")
             return
-        payload = json.dumps({"type":"game_invite","sender":self.username,"game":"ttt"}).encode()
+        payload = json.dumps({"type": "game_invite", "sender": self.username, "game": "ttt"}).encode()
         if self._send_data(payload):
             self._log("Вы отправили приглашение сыграть в крестики-нолики", "system")
 
     def _handle_game_invite(self, sender):
-        accept_btn = ctk.CTkButton(self.chat, text="Принять", width=80, height=30,
-                                   command=lambda: self._accept_game(sender))
+        accept_btn = ctk.CTkButton(self.chat, text="Принять", width=80, height=30, command=lambda: self._accept_game(sender))
         self._log(f"{sender} предлагает сыграть в крестики-нолики", widget=accept_btn)
 
     def _accept_game(self, sender):
-        payload = json.dumps({"type":"game_accept","sender":self.username,"game":"ttt"}).encode()
+        payload = json.dumps({"type": "game_accept", "sender": self.username, "game": "ttt"}).encode()
         if self._send_data(payload):
             self._log("Вы приняли приглашение. Игра начинается!", "system")
             self._start_game(sender, is_initiator=False)
@@ -566,31 +524,20 @@ class PingMessenger:
         if self.game_window and self.game_window.winfo_exists():
             self.game_window.destroy()
         my_symbol = 'X' if is_initiator else 'O'
-        self.game_window = TicTacToeWindow(
-            self.root, my_symbol, opponent,
-            self._send_game_move,
-            self._on_game_close
-        )
+        self.game_window = TicTacToeWindow(self.root, my_symbol, opponent, self._send_game_move, self._on_game_close)
         self.game_opponent = opponent
         self.game_type = "ttt"
 
     def _send_game_move(self, *args, surrender=False):
         if surrender:
-            payload = json.dumps({"type":"game_move","sender":self.username,
-                                  "game":"ttt",
-                                  "data":{"surrender":True}}).encode()
+            payload = json.dumps({"type": "game_move", "sender": self.username, "game": "ttt", "data": {"surrender": True}}).encode()
         else:
             row, col = args[0], args[1]
-            data = {"row":row, "col":col, "surrender":False}
-            payload = json.dumps({"type":"game_move","sender":self.username,
-                                  "game":"ttt",
-                                  "data":data}).encode()
+            payload = json.dumps({"type": "game_move", "sender": self.username, "game": "ttt", "data": {"row": row, "col": col, "surrender": False}}).encode()
         self._send_data(payload)
 
     def _handle_game_move(self, sender, data):
-        if self.game_window is None or not self.game_window.winfo_exists():
-            return
-        if sender == self.username:
+        if self.game_window is None or not self.game_window.winfo_exists() or sender == self.username:
             return
         if data.get("surrender", False):
             self.game_window._end_game(f"{sender} сдался. Вы выиграли!")
@@ -605,41 +552,93 @@ class PingMessenger:
         self.game_opponent = None
         self.game_type = None
 
-    # ---------- Криптография ----------
-    def _exchange_keys(self, is_server):
+    def _verify_peer(self, peer_identity_key):
+        """Verify a peer identity on the GUI thread before accepting the session."""
+        fingerprint = IdentityKey.verify if False else TrustStore.fingerprint(peer_identity_key)
+        trusted_key = self.trust_store.get_key(fingerprint)
+        if trusted_key is not None:
+            if trusted_key != peer_identity_key:
+                raise ValueError("Ключ доверенного собеседника изменился")
+            return True
+
+        result = {"accepted": False}
+        done = threading.Event()
+
+        def ask():
+            dialog = ctk.CTkToplevel(self.root)
+            dialog.title("Проверка безопасности")
+            dialog.geometry("560x330")
+            dialog.resizable(False, False)
+            dialog.transient(self.root)
+            dialog.grab_set()
+            ctk.CTkLabel(dialog, text="🔐 Проверка личности собеседника", font=("Inter", 20, "bold")).pack(pady=(25, 10))
+            ctk.CTkLabel(dialog, text="Сравните этот отпечаток с отпечатком на устройстве друга.", font=("Inter", 12), wraplength=500).pack(pady=5)
+            fp = ctk.CTkTextbox(dialog, width=500, height=70, font=("Consolas", 16))
+            fp.insert("1.0", fingerprint)
+            fp.configure(state="disabled")
+            fp.pack(pady=12)
+            ctk.CTkLabel(dialog, text="Если отпечатки не совпадают — не доверяйте соединению.", text_color="#ff6666", font=("Inter", 11, "bold")).pack(pady=5)
+            buttons = ctk.CTkFrame(dialog, fg_color="transparent")
+            buttons.pack(pady=15)
+
+            def finish(accepted):
+                result["accepted"] = accepted
+                if accepted:
+                    self.trust_store.trust(peer_identity_key)
+                dialog.grab_release()
+                dialog.destroy()
+                done.set()
+
+            ctk.CTkButton(buttons, text="✓ Доверять", width=150, command=lambda: finish(True)).pack(side="left", padx=10)
+            ctk.CTkButton(buttons, text="✕ Отклонить", width=150, fg_color="#aa3333", hover_color="#882222", command=lambda: finish(False)).pack(side="left", padx=10)
+            dialog.protocol("WM_DELETE_WINDOW", lambda: finish(False))
+
+        self.root.after(0, ask)
+        if not done.wait(timeout=120):
+            raise TimeoutError("Время проверки личности истекло")
+        if not result["accepted"]:
+            raise PermissionError("Собеседник не прошёл проверку личности")
+        return True
+
+    def _establish_secure_connection(self, sock, is_server):
+        """Create authenticated ECDH transport and require peer identity verification."""
+        expected = None
+        connection = EncryptedConnection(sock, identity=self.identity, expected_peer_identity=expected)
         try:
-            self._log("⏳ Генерация ключей шифрования...", "system")
-            priv = ec.generate_private_key(ec.SECP384R1())
-            pub = priv.public_key()
-            pub_bytes = pub.public_bytes(serialization.Encoding.PEM,
-                                         serialization.PublicFormat.SubjectPublicKeyInfo)
-            if is_server:
-                self.conn.sendall(pub_bytes)
-                peer = self.conn.recv(2048)
-            else:
-                peer = self.conn.recv(2048)
-                self.conn.sendall(pub_bytes)
-            peer_key = serialization.load_pem_public_key(peer)
-            secret = priv.exchange(ec.ECDH(), peer_key)
-            key = HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
-                       info=b'ping_messenger_e2ee').derive(secret)
-            self.cipher = Fernet(base64.urlsafe_b64encode(key))
-            self._log("🔒 Сквозное шифрование AES-256 установлено!", "my_msg")
+            connection.establish_encryption(is_server=is_server)
+            peer_key = connection.session.peer_identity_public_key
+            if peer_key is None:
+                raise ValueError("Собеседник не предоставил identity key")
+            self._verify_peer(peer_key)
+            self.secure_connection = connection
+            self.conn = sock
+            self.cipher = connection.session.cipher
+            self.peer_identity_key = peer_key
+            self.peer_fingerprint = TrustStore.fingerprint(peer_key)
+            self._log(f"🔒 Защищённое соединение установлено. Отпечаток: {self.peer_fingerprint}", "my_msg")
+            return True
+        except Exception:
+            connection.close()
+            raise
+
+    def _exchange_keys(self, is_server):
+        """Compatibility wrapper used by older tests/callers."""
+        try:
+            if not self.conn:
+                return False
+            self._establish_secure_connection(self.conn, is_server)
             return True
         except Exception as e:
-            self._log(f"❌ Ошибка обмена ключами: {e}", "system")
+            self._log(f"❌ Проверка безопасности не пройдена: {e}", "system")
             return False
 
     def _send_handshake(self):
-        try:
-            payload = json.dumps({"type":"handshake","sender":self.username,"data":"join"}).encode()
-            enc = self.cipher.encrypt(payload)
-            self.conn.sendall(struct.pack('>I', len(enc)) + enc)
-        except: pass
+        payload = json.dumps({"type": "handshake", "sender": self.username, "data": "join"}).encode()
+        self._send_data(payload)
 
-    # ---------- Сеть ----------
     def _start_server(self):
         def server_thread():
+            client = None
             try:
                 port = find_free_port()
                 self.server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -649,99 +648,121 @@ class PingMessenger:
                 ips = get_all_ips()
                 pub = get_public_ip()
                 self._log(f"✅ Сервер запущен на порту {port}", "system")
-                if pub: self._log(f"🌍 Публичный IP (для интернета): {pub}", "system")
+                if pub:
+                    self._log(f"🌍 Публичный IP (для интернета): {pub}", "system")
                 self._log("📶 Доступные IP-адреса для подключения:", "system")
-                for ip in ips: self._log(f"   {ip}:{port}", "system")
+                for ip in ips:
+                    self._log(f"   {ip}:{port}", "system")
                 self._log(f"📌 Сообщите другу IP и порт {port}.", "system")
                 self._log("   (Radmin VPN: выберите IP, начинающийся с 26.x.x.x)", "system")
                 client, addr = self.server_sock.accept()
-                self.conn = client
+                if not self.running:
+                    client.close()
+                    return
                 self._log(f"✅ Соединение с {addr[0]}!", "system")
-                if self._exchange_keys(True):
+                if self._establish_secure_connection(client, is_server=True):
                     self._send_handshake()
                     self._listen()
-                else:
-                    self.conn.close()
             except OSError as e:
-                if e.winerror == 10048:
+                if getattr(e, "winerror", None) == 10048:
                     self._log("❌ Порт занят. Попробуйте снова.", "system")
                 else:
                     self._log(f"❌ Ошибка сервера: {e}", "system")
+            except PermissionError as e:
+                self._log(f"🛡️ Соединение отклонено: {e}", "system")
             except Exception as e:
                 self._log(f"❌ Ошибка сервера: {e}", "system")
             finally:
-                if self.server_sock: self.server_sock.close()
+                if client and client is not self.conn:
+                    try:
+                        client.close()
+                    except OSError:
+                        pass
+                if self.server_sock:
+                    try:
+                        self.server_sock.close()
+                    except OSError:
+                        pass
+                    self.server_sock = None
         threading.Thread(target=server_thread, daemon=True).start()
 
     def _start_client(self):
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("Подключение")
         dialog.geometry("340x280")
-        dialog.transient(self.root); dialog.grab_set()
-        ctk.CTkLabel(dialog, text="IP-адрес друга:").pack(pady=(10,0))
-        ip_e = ctk.CTkEntry(dialog, width=250); ip_e.pack(pady=5)
-        ctk.CTkLabel(dialog, text="Порт:").pack(pady=(10,0))
-        port_e = ctk.CTkEntry(dialog, width=250); port_e.pack(pady=5)
-        ctk.CTkLabel(dialog, text="Если друг за пределами вашей сети,\nнужен публичный IP и проброс порта.",
-                     font=("Inter",10), text_color="gray").pack(pady=5)
+        dialog.transient(self.root)
+        dialog.grab_set()
+        ctk.CTkLabel(dialog, text="IP-адрес друга:").pack(pady=(10, 0))
+        ip_e = ctk.CTkEntry(dialog, width=250)
+        ip_e.pack(pady=5)
+        ctk.CTkLabel(dialog, text="Порт:").pack(pady=(10, 0))
+        port_e = ctk.CTkEntry(dialog, width=250)
+        port_e.pack(pady=5)
+        ctk.CTkLabel(dialog, text="Если друг за пределами вашей сети,\nнужен публичный IP и проброс порта.", font=("Inter", 10), text_color="gray").pack(pady=5)
+
         def connect():
             ip = ip_e.get().strip()
             try:
                 port = int(port_e.get().strip())
-            except:
-                messagebox.showerror("Ошибка", "Порт должен быть числом"); return
-            if not ip or port <= 0:
-                messagebox.showerror("Ошибка", "Введите корректные данные"); return
+            except ValueError:
+                messagebox.showerror("Ошибка", "Порт должен быть числом")
+                return
+            if not ip or not (1 <= port <= 65535):
+                messagebox.showerror("Ошибка", "Введите корректные данные")
+                return
             dialog.destroy()
+
             def client_thread():
+                s = None
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.settimeout(10)
                     s.connect((ip, port))
                     s.settimeout(None)
-                    self.conn = s
                     self._log(f"✅ Подключено к {ip}:{port}", "system")
-                    if self._exchange_keys(False):
-                        self._send_handshake()
-                        self._listen()
-                    else:
-                        self.conn.close()
+                    self._establish_secure_connection(s, is_server=False)
+                    self._send_handshake()
+                    self._listen()
                 except socket.timeout:
-                    messagebox.showerror("Ошибка", "Время ожидания истекло.\nПроверьте, запущен ли сервер.")
+                    if s:
+                        s.close()
+                    self.root.after(0, lambda: messagebox.showerror("Ошибка", "Время ожидания истекло.\nПроверьте, запущен ли сервер."))
+                except PermissionError as e:
+                    if s:
+                        s.close()
+                    self.root.after(0, lambda e=e: messagebox.showwarning("Проверка безопасности", str(e)))
                 except socket.error as e:
-                    if e.winerror == 10051:
-                        messagebox.showerror("Ошибка сети", "Сеть недоступна.\nПроверьте соединение и правильность IP.")
+                    if s:
+                        s.close()
+                    if getattr(e, "winerror", None) == 10051:
+                        self.root.after(0, lambda: messagebox.showerror("Ошибка сети", "Сеть недоступна.\nПроверьте соединение и правильность IP."))
                     else:
-                        messagebox.showerror("Ошибка", f"Код: {e}")
+                        self.root.after(0, lambda e=e: messagebox.showerror("Ошибка", f"Код: {e}"))
                 except Exception as e:
-                    messagebox.showerror("Ошибка", str(e))
+                    if s:
+                        s.close()
+                    self.root.after(0, lambda e=e: messagebox.showerror("Ошибка безопасности", str(e)))
             threading.Thread(target=client_thread, daemon=True).start()
+
         ctk.CTkButton(dialog, text="Подключиться", command=connect).pack(pady=15)
         ctk.CTkButton(dialog, text="Отмена", command=dialog.destroy, fg_color="transparent").pack()
 
     def _listen(self):
-        while self.running and self.conn:
+        while self.running and self.secure_connection:
             try:
-                raw = self.conn.recv(4)
-                if not raw: break
-                length = struct.unpack('>I', raw)[0]
-                data = b''
-                while len(data) < length:
-                    chunk = self.conn.recv(min(length - len(data), 4096))
-                    if not chunk: break
-                    data += chunk
-                if len(data) < length: break
-                dec = self.cipher.decrypt(data)
+                dec = self.secure_connection.recv_encrypted()
                 msg = json.loads(dec.decode())
+                if not isinstance(msg, dict):
+                    raise ValueError("Некорректный формат сообщения")
                 typ = msg.get("type")
                 sender = msg.get("sender", "Неизвестный")
                 if typ == "text":
                     if sender != self.username:
-                        self._log(f"{sender}: {msg['data']}", "other_msg", sender=sender)
+                        self._log(f"{sender}: {msg.get('data', '')}", "other_msg", sender=sender)
                 elif typ == "image":
                     if sender != self.username:
                         self._log(f"📷 {sender} отправил изображение", "system")
-                        self.root.after(0, self._display_image, msg["data"], False, sender)
+                        self.root.after(0, self._display_image, msg.get("data", ""), False, sender)
                 elif typ == "game_invite":
                     if sender != self.username:
                         self.root.after(0, self._handle_game_invite, sender)
@@ -757,27 +778,44 @@ class PingMessenger:
                 elif typ == "handshake":
                     if sender != self.username:
                         self._log(f"✅ {sender} присоединился к чату", "system")
-                        # Уведомление о подключении
                         self.root.after(0, self._notify_if_needed, "Новый пользователь", f"{sender} присоединился к чату")
-            except socket.error:
+            except (socket.error, ValueError, json.JSONDecodeError) as e:
+                self._log(f"Ошибка приёма: {e}", "system")
                 break
             except Exception as e:
                 self._log(f"Ошибка приёма: {e}", "system")
                 break
         self._log("🔌 Соединение разорвано.", "system")
-        if self.conn:
-            try: self.conn.close()
-            except: pass
-            self.conn = None; self.cipher = None
+        if self.secure_connection:
+            try:
+                self.secure_connection.close()
+            except Exception:
+                pass
+        self.secure_connection = None
+        self.conn = None
+        self.cipher = None
+        self.peer_identity_key = None
+        self.peer_fingerprint = None
 
     def _on_close(self):
         self.running = False
-        if self.conn: self.conn.close()
-        if self.server_sock: self.server_sock.close()
+        if self.secure_connection:
+            self.secure_connection.close()
+        elif self.conn:
+            try:
+                self.conn.close()
+            except OSError:
+                pass
+        if self.server_sock:
+            try:
+                self.server_sock.close()
+            except OSError:
+                pass
         self.root.destroy()
 
     def run(self):
         self.root.mainloop()
+
 
 if __name__ == "__main__":
     PingMessenger().run()
