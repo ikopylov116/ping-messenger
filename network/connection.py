@@ -16,11 +16,22 @@ MAX_PUBLIC_KEY_SIZE = 4096
 
 
 class EncryptedConnection:
-    """TCP connection using framed, authenticated ECDH encryption."""
+    """TCP connection using framed, authenticated ECDH encryption.
 
-    def __init__(self, sock: socket.socket, identity: IdentityKey | None = None) -> None:
+    Pass ``expected_peer_identity`` when a previously trusted fingerprint/key
+    is available. This turns authentication into actual peer verification and
+    prevents a newly generated attacker identity from being accepted.
+    """
+
+    def __init__(
+        self,
+        sock: socket.socket,
+        identity: IdentityKey | None = None,
+        expected_peer_identity: bytes | None = None,
+    ) -> None:
         self.socket = sock
         self.session = EncryptionSession(identity)
+        self.expected_peer_identity = expected_peer_identity
         self.closed = False
 
     @staticmethod
@@ -56,12 +67,14 @@ class EncryptedConnection:
         if len(public_key) > MAX_PUBLIC_KEY_SIZE:
             raise ValueError("Public key is unexpectedly large")
 
-        # Both sides exchange ephemeral ECDH and persistent identity keys.
         send_frame(self.socket, self._bundle(public_key, identity_key))
         peer_bundle = recv_frame(self.socket)
         peer_public_key, peer_identity_key = self._parse_bundle(peer_bundle)
 
-        # Sign the exact ephemeral-key transcript before deriving the session key.
+        if self.expected_peer_identity is not None:
+            if peer_identity_key != self.expected_peer_identity:
+                raise ValueError("Peer identity does not match the trusted key")
+
         signature = self.session.handshake_signature(peer_public_key)
         signature_payload = json.dumps(
             {"signature": base64.b64encode(signature).decode("ascii")},
